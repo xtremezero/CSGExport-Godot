@@ -52,6 +52,9 @@ func exportcsg():
 	objcont+="mtllib "+object_name+".mtl\n"
 	objcont+="o" + object_name + "\n";		"CHANGE WITH SELECTION NAME";
 	
+	#Blank material
+	var blank_material = SpatialMaterial.new()
+	blank_material.resource_name = "BlankMaterial"
 	
 	#Get surfaces and mesh info
 	for t in range(csgMesh[-1].get_surface_count()):
@@ -86,8 +89,10 @@ func exportcsg():
 		#add groups and materials
 		objcont+="g surface"+str(t)+"\n"
 		
-		if mat != null:
-			objcont+="usemtl "+str(mat)+"\n"
+		if mat == null:
+			mat = blank_material
+		
+		objcont+="usemtl "+str(mat)+"\n"
 		
 		#add faces
 		for face in faces:
@@ -97,12 +102,11 @@ func exportcsg():
 		#update verts
 		vertcount+=tempvcount
 		
-		if mat != null:
-			#create Materials for current surface
-			matcont+=str("newmtl "+str(mat))+'\n'
-			matcont+=str("Kd ",mat.albedo_color.r," ",mat.albedo_color.g," ",mat.albedo_color.b)+'\n'
-			matcont+=str("Ke ",mat.emission.r," ",mat.emission.g," ",mat.emission.b)+'\n'
-			matcont+=str("d ",mat.albedo_color.a)+"\n"
+		#create Materials for current surface
+		matcont+=str("newmtl "+str(mat))+'\n'
+		matcont+=str("Kd ",mat.albedo_color.r," ",mat.albedo_color.g," ",mat.albedo_color.b)+'\n'
+		matcont+=str("Ke ",mat.emission.r," ",mat.emission.g," ",mat.emission.b)+'\n'
+		matcont+=str("d ",mat.albedo_color.a)+"\n"
 		
 
 	#Write to files
