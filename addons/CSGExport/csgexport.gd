@@ -50,7 +50,7 @@ func exportcsg():
 	
 	#OBJ Headers
 	objcont+="mtllib "+object_name+".mtl\n"
-	objcont+="o" + object_name + "\n";		"CHANGE WITH SELECTION NAME";
+	objcont+="o " + object_name + "\n";		"CHANGE WITH SELECTION NAME";
 	
 	
 	#Get surfaces and mesh info
