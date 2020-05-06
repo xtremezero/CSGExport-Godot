@@ -3,7 +3,6 @@
 tool
 extends EditorPlugin
 
-var dock
 var button_csg = Button.new()
 var object_name = ""
 var obj = null
