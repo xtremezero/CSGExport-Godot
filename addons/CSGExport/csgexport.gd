@@ -7,6 +7,11 @@ var button_csg = Button.new()
 var object_name = ""
 var obj = null
 
+var objcont = "" #.obj content
+var matcont = "" #.mat content
+var fdialog: FileDialog
+
+
 func _enter_tree():
 	
 	get_editor_interface().get_selection().connect("selection_changed",self,"_selectionchanged")
@@ -42,8 +47,6 @@ func _on_csg_pressed():
 	
 func exportcsg():
 	#Variables
-	var objcont = "" #.obj content
-	var matcont = "" #.mat content
 	var csgMesh= obj.get_meshes();
 	var vertcount=0
 	
@@ -106,20 +109,36 @@ func exportcsg():
 		matcont+=str("Kd ",mat.albedo_color.r," ",mat.albedo_color.g," ",mat.albedo_color.b)+'\n'
 		matcont+=str("Ke ",mat.emission.r," ",mat.emission.g," ",mat.emission.b)+'\n'
 		matcont+=str("d ",mat.albedo_color.a)+"\n"
-		
+	
+	#Select file destination
+	fdialog = FileDialog.new()
+	fdialog.mode = FileDialog.MODE_SAVE_FILE
+	fdialog.access = FileDialog.ACCESS_FILESYSTEM
+	fdialog.add_filter("*.obj; Wavefront File")
+	fdialog.show_hidden_files = false
+	fdialog.window_title = "Export CSGMesh"
+	fdialog.resizable = true
+	
+	get_editor_interface().get_editor_viewport().add_child(fdialog)
+	fdialog.connect("file_selected", self, "onFileDialogOK", [])
+	fdialog.popup_centered(Vector2(700, 450))
+	
 
+func onFileDialogOK(path: String):
 	#Write to files
 	var objfile = File.new()
-	objfile.open("res://"+object_name+".obj", File.WRITE)
+	objfile.open(path, File.WRITE)
 	objfile.store_string(objcont)
 	objfile.close()
 	
 	var mtlfile = File.new()
-	mtlfile.open("res://"+object_name+".mtl", File.WRITE)
+	path.erase(path.length() - 4, 4)
+	mtlfile.open(path + ".mtl", File.WRITE)
 	mtlfile.store_string(matcont)
 	mtlfile.close()
+	
+	fdialog.queue_free()
 	
 	#output message
 	print("CSG Mesh Exported")
 	get_editor_interface().get_resource_filesystem().scan()
-		
