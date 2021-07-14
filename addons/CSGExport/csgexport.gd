@@ -128,12 +128,12 @@ func exportcsg():
 func onFileDialogOK(path: String):
 	#Write to files
 	var objfile = File.new()
-	objfile.open(path+object_name+".obj", File.WRITE)
+	objfile.open(path+"/"+object_name+".obj", File.WRITE)
 	objfile.store_string(objcont)
 	objfile.close()
 
 	var mtlfile = File.new()
-	mtlfile.open(path+object_name+".mtl", File.WRITE)
+	mtlfile.open(path+"/"+object_name+".mtl", File.WRITE)
 	mtlfile.store_string(matcont)
 	mtlfile.close()
 
