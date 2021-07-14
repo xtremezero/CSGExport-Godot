@@ -47,8 +47,6 @@ func exportcsg():
 	var csgMesh= obj.get_meshes();
 	var vertcount=0
 	
-	objcont = ""
-	
 	#OBJ Headers
 	objcont+="mtllib "+object_name+".mtl\n"
 	objcont+="o " + object_name + "\n";		"CHANGE WITH SELECTION NAME";
