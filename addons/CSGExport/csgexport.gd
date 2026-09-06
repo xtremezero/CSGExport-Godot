@@ -1,27 +1,42 @@
 @tool
 extends EditorPlugin
 
-var button_csg = Button.new()
-var object_name = ""
+var button_csg: Button = Button.new()
+var object_name: String = ""
 var obj: CSGShape3D = null
 
-var objcont = "" # .obj content
-var matcont = "" # .mtl content
-var fdialog: FileDialog
+var objcont: String = ""
+var matcont: String = ""
+var fdialog: FileDialog = null
 
 
 func _enter_tree() -> void:
 	if get_editor_interface() and get_editor_interface().get_selection():
 		get_editor_interface().get_selection().selection_changed.connect(_selectionchanged)
+
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, button_csg)
 	button_csg.text = "Export CSGMesh to .obj"
+	button_csg.visible = false
 	button_csg.pressed.connect(_on_csg_pressed)
+
+	fdialog = FileDialog.new()
+	fdialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	fdialog.access = FileDialog.ACCESS_FILESYSTEM
+	fdialog.show_hidden_files = false
+	fdialog.title = "Export CSGMesh to .OBJ"
+	fdialog.size = Vector2i(700, 450)
+	fdialog.dir_selected.connect(onFileDialogOK)
+	get_editor_interface().get_base_control().add_child(fdialog)
+
+	_selectionchanged()
 
 
 func _exit_tree() -> void:
 	if button_csg:
 		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, button_csg)
 		button_csg.queue_free()
+	if fdialog:
+		fdialog.queue_free()
 	if get_editor_interface() and get_editor_interface().get_selection():
 		if get_editor_interface().get_selection().selection_changed.is_connected(_selectionchanged):
 			get_editor_interface().get_selection().selection_changed.disconnect(_selectionchanged)
@@ -29,14 +44,12 @@ func _exit_tree() -> void:
 
 func _selectionchanged() -> void:
 	var selected = get_editor_interface().get_selection().get_selected_nodes()
-	if selected.size() == 1:
-		if selected[0] is CSGShape3D:
-			object_name = selected[0].name
-			obj = selected[0] as CSGShape3D
-			button_csg.visible = true
-		else:
-			button_csg.visible = false
+	if selected.size() == 1 and selected[0] is CSGShape3D:
+		object_name = selected[0].name
+		obj = selected[0] as CSGShape3D
+		button_csg.visible = true
 	else:
+		obj = null
 		button_csg.visible = false
 
 
@@ -48,160 +61,269 @@ func _on_csg_pressed() -> void:
 	exportcsg()
 
 
+func _sanitize_name(p_name: String) -> String:
+	var s = p_name.strip_edges()
+	if s.is_empty() or s.begins_with("<"):
+		return "Material"
+	var clean = ""
+	for i in range(s.length()):
+		var c = s[i]
+		if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' or c == '-':
+			clean += c
+		else:
+			clean += "_"
+	return clean if not clean.is_empty() else "Material"
+
+
 func _get_target_mesh(target_csg: CSGShape3D) -> Mesh:
 	if target_csg == null:
 		return null
-		
-	# 1. Resolve root CSG shape in hierarchy if target is a child shape
+
 	var root_csg = target_csg
 	while root_csg.get_parent() is CSGShape3D:
 		root_csg = root_csg.get_parent() as CSGShape3D
-		
-	# 2. Try get_meshes() on target shape or root shape
+
 	var meshes = target_csg.get_meshes()
 	if meshes.size() < 2 and root_csg != target_csg:
 		meshes = root_csg.get_meshes()
-		
+
 	if meshes.size() >= 2:
-		if meshes[1] is Mesh:
-			return meshes[1] as Mesh
-		elif meshes[-1] is Mesh:
-			return meshes[-1] as Mesh
-			
-	# 3. Fallback to bake_static_mesh() if available
+		for idx in range(1, meshes.size(), 2):
+			if meshes[idx] is Mesh:
+				return meshes[idx] as Mesh
+
 	if target_csg.has_method("bake_static_mesh"):
 		var baked = target_csg.bake_static_mesh()
 		if baked != null and baked is Mesh and baked.get_surface_count() > 0:
 			return baked
-			
+
 	if root_csg != target_csg and root_csg.has_method("bake_static_mesh"):
 		var baked_root = root_csg.bake_static_mesh()
 		if baked_root != null and baked_root is Mesh and baked_root.get_surface_count() > 0:
 			return baked_root
-			
+
 	return null
+
+
+func _resolve_material(mesh: Mesh, surface_idx: int, target_csg: CSGShape3D) -> Material:
+	var mat = mesh.surface_get_material(surface_idx)
+	if mat != null:
+		return mat
+
+	if target_csg != null:
+		if target_csg.material_override != null:
+			return target_csg.material_override
+		if target_csg.material != null:
+			return target_csg.material
+
+		var root = target_csg
+		while root.get_parent() is CSGShape3D:
+			root = root.get_parent() as CSGShape3D
+		var found = _find_material_in_csg_tree(root, surface_idx)
+		if found != null:
+			return found
+
+	return null
+
+
+func _find_material_in_csg_tree(node: Node, target_idx: int) -> Material:
+	var current_idx = 0
+	var stack: Array[Node] = [node]
+	while stack.size() > 0:
+		var current = stack.pop_back()
+		if current is CSGShape3D:
+			var csg = current as CSGShape3D
+			var m = csg.material_override if csg.material_override != null else csg.material
+			if m != null:
+				if current_idx == target_idx:
+					return m
+				current_idx += 1
+		for child in current.get_children():
+			stack.push_back(child)
+	return null
+
+
+func _build_mtl_entry(mat: Material, mat_name: String) -> String:
+	var entry = "newmtl " + mat_name + "\n"
+	if mat is BaseMaterial3D:
+		var bmat = mat as BaseMaterial3D
+		var col = bmat.albedo_color
+		entry += str("Kd ", col.r, " ", col.g, " ", col.b, "\n")
+		if bmat.emission_enabled:
+			var em = bmat.emission * bmat.emission_energy_multiplier
+			entry += str("Ke ", em.r, " ", em.g, " ", em.b, "\n")
+		else:
+			entry += "Ke 0 0 0\n"
+		entry += str("d ", col.a, "\n")
+		if bmat.albedo_texture != null and not bmat.albedo_texture.resource_path.is_empty():
+			entry += str("map_Kd ", bmat.albedo_texture.resource_path.get_file(), "\n")
+	elif mat is ShaderMaterial:
+		var smat = mat as ShaderMaterial
+		var col = Color(0.75, 0.75, 0.75, 1.0)
+		for p in ["albedo", "albedo_color", "color", "base_color", "tint"]:
+			var param = smat.get_shader_parameter(p)
+			if param is Color:
+				col = param
+				break
+		entry += str("Kd ", col.r, " ", col.g, " ", col.b, "\n")
+		entry += "Ke 0 0 0\n"
+		entry += str("d ", col.a, "\n")
+	else:
+		entry += "Kd 1 1 1\nKe 0 0 0\nd 1\n"
+	return entry
 
 
 func exportcsg() -> void:
 	if obj == null:
 		return
-		
+
 	objcont = ""
 	matcont = ""
 	var mesh: Mesh = _get_target_mesh(obj)
 	if mesh == null or mesh.get_surface_count() == 0:
-		push_warning("No mesh data found on selected CSG node or its parent CSG hierarchy.")
+		push_warning("CSGExport: No mesh data found on selected CSG node or parent hierarchy.")
 		return
 
-	var vertcount = 0
+	var vert_offset := 0
+	var uv_offset := 0
+	var normal_offset := 0
 
-	# OBJ Headers
-	objcont += "mtllib " + object_name + ".mtl\n"
-	objcont += "o " + object_name + "\n"
+	var mat_instance_map: Dictionary = {}
+	var exported_mat_names: Dictionary = {}
+	var fallback_material_count := 0
 
-	# Blank material fallback
-	var blank_material = StandardMaterial3D.new()
-	blank_material.resource_name = "BlankMaterial"
+	var default_material = StandardMaterial3D.new()
+	default_material.resource_name = "Default_Material"
+	default_material.albedo_color = Color(0.75, 0.75, 0.75, 1.0)
 
-	# Get surfaces and mesh info
+	var safe_obj_name = _sanitize_name(object_name)
+	if safe_obj_name.is_empty():
+		safe_obj_name = "CSGMesh"
+
+	# OBJ Header
+	objcont += "mtllib " + safe_obj_name + ".mtl\n"
+	objcont += "o " + safe_obj_name + "\n"
+
+	# Iterate over surfaces
 	for t in range(mesh.get_surface_count()):
 		var surface = mesh.surface_get_arrays(t)
 		if surface.is_empty():
 			continue
-			
-		var verts = surface[Mesh.ARRAY_VERTEX]
+
+		var verts = surface[Mesh.ARRAY_VERTEX] if surface.size() > Mesh.ARRAY_VERTEX else null
+		if verts == null or verts.size() == 0:
+			continue
+
 		var normals = surface[Mesh.ARRAY_NORMAL] if surface.size() > Mesh.ARRAY_NORMAL else null
 		var UVs = surface[Mesh.ARRAY_TEX_UV] if surface.size() > Mesh.ARRAY_TEX_UV else null
-		var mat = mesh.surface_get_material(t)
-		var faces = []
+		var indices = surface[Mesh.ARRAY_INDEX] if surface.size() > Mesh.ARRAY_INDEX else null
 
-		# create_faces_from_verts (Triangles)
-		var tempv = 0
-		for v in range(verts.size()):
-			if tempv % 3 == 0:
-				faces.append([])
-			faces[-1].append(v + 1)
-			tempv += 1
-			tempv = tempv % 3
+		var mat = _resolve_material(mesh, t, obj)
+		if mat == null:
+			mat = default_material
 
-		# add vertices
-		var tempvcount = 0
+		# Output vertices
 		for ver in verts:
-			objcont += str("v ", ver.x, ' ', ver.y, ' ', ver.z) + "\n"
-			tempvcount += 1
+			objcont += str("v ", ver.x, " ", ver.y, " ", ver.z, "\n")
 
-		# add UVs
+		# Output UVs
 		if UVs != null:
 			for uv in UVs:
-				objcont += str("vt ", uv.x, ' ', uv.y) + "\n"
-				
-		# add Normals
+				objcont += str("vt ", uv.x, " ", uv.y, "\n")
+
+		# Output Normals
 		if normals != null:
 			for norm in normals:
-				objcont += str("vn ", norm.x, ' ', norm.y, ' ', norm.z) + "\n"
+				objcont += str("vn ", norm.x, " ", norm.y, " ", norm.z, "\n")
 
-		# add groups and materials
+		# Group header
 		objcont += "g surface" + str(t) + "\n"
 
-		if mat == null:
-			mat = blank_material
+		# Resolve material name & write MTL
+		var instance_id = mat.get_instance_id()
+		var mat_name = ""
 
-		objcont += "usemtl " + str(mat.resource_name if mat.resource_name != "" else mat) + "\n"
-
-		# add faces
-		for face in faces:
-			var idx0 = face[0] + vertcount
-			var idx1 = face[1] + vertcount
-			var idx2 = face[2] + vertcount
-			if UVs != null and normals != null:
-				objcont += str("f ", idx2, "/", idx2, "/", idx2, ' ', idx1, "/", idx1, "/", idx1, ' ', idx0, "/", idx0, "/", idx0) + "\n"
-			elif UVs != null:
-				objcont += str("f ", idx2, "/", idx2, ' ', idx1, "/", idx1, ' ', idx0, "/", idx0) + "\n"
-			elif normals != null:
-				objcont += str("f ", idx2, "//", idx2, ' ', idx1, "//", idx1, ' ', idx0, "//", idx0) + "\n"
-			else:
-				objcont += str("f ", idx2, ' ', idx1, ' ', idx0) + "\n"
-
-		# update verts
-		vertcount += tempvcount
-
-		# create Materials for current surface
-		var mat_name = mat.resource_name if mat.resource_name != "" else str(mat)
-		matcont += str("newmtl ", mat_name) + '\n'
-		if mat is BaseMaterial3D:
-			var base_mat = mat as BaseMaterial3D
-			matcont += str("Kd ", base_mat.albedo_color.r, " ", base_mat.albedo_color.g, " ", base_mat.albedo_color.b) + '\n'
-			if base_mat.emission_enabled:
-				matcont += str("Ke ", base_mat.emission.r, " ", base_mat.emission.g, " ", base_mat.emission.b) + '\n'
-			else:
-				matcont += "Ke 0 0 0\n"
-			matcont += str("d ", base_mat.albedo_color.a) + "\n"
+		if mat_instance_map.has(instance_id):
+			mat_name = mat_instance_map[instance_id]
 		else:
-			matcont += "Kd 1 1 1\nKe 0 0 0\nd 1\n"
+			var base_name = mat.resource_name
+			if base_name.is_empty():
+				fallback_material_count += 1
+				base_name = "Material_" + str(fallback_material_count)
+			var clean = _sanitize_name(base_name)
+			mat_name = clean
+			var dup_counter = 1
+			while exported_mat_names.has(mat_name):
+				dup_counter += 1
+				mat_name = clean + "_" + str(dup_counter)
+			mat_instance_map[instance_id] = mat_name
+			exported_mat_names[mat_name] = true
+			matcont += _build_mtl_entry(mat, mat_name)
 
-	# Select file destination
-	fdialog = FileDialog.new()
-	fdialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
-	fdialog.access = FileDialog.ACCESS_RESOURCES
-	fdialog.show_hidden_files = false
-	fdialog.title = "Export CSGMesh"
-	fdialog.size = Vector2i(700, 450)
+		objcont += "usemtl " + mat_name + "\n"
 
-	get_editor_interface().get_base_control().add_child(fdialog)
-	fdialog.dir_selected.connect(onFileDialogOK)
-	fdialog.popup_centered()
+		# Build triangle face indices (reversed winding order for standard OBJ orientation)
+		var triangles: Array = []
+		if indices != null and indices.size() > 0:
+			for i in range(0, indices.size() - 2, 3):
+				triangles.append([indices[i + 2], indices[i + 1], indices[i]])
+		else:
+			for i in range(0, verts.size() - 2, 3):
+				triangles.append([i + 2, i + 1, i])
+
+		# Output face lines
+		for tri in triangles:
+			var v0 = tri[0] + 1 + vert_offset
+			var v1 = tri[1] + 1 + vert_offset
+			var v2 = tri[2] + 1 + vert_offset
+
+			if UVs != null and normals != null:
+				var vt0 = tri[0] + 1 + uv_offset
+				var vt1 = tri[1] + 1 + uv_offset
+				var vt2 = tri[2] + 1 + uv_offset
+				var vn0 = tri[0] + 1 + normal_offset
+				var vn1 = tri[1] + 1 + normal_offset
+				var vn2 = tri[2] + 1 + normal_offset
+				objcont += str("f ", v0, "/", vt0, "/", vn0, " ", v1, "/", vt1, "/", vn1, " ", v2, "/", vt2, "/", vn2, "\n")
+			elif UVs != null:
+				var vt0 = tri[0] + 1 + uv_offset
+				var vt1 = tri[1] + 1 + uv_offset
+				var vt2 = tri[2] + 1 + uv_offset
+				objcont += str("f ", v0, "/", vt0, " ", v1, "/", vt1, " ", v2, "/", vt2, "\n")
+			elif normals != null:
+				var vn0 = tri[0] + 1 + normal_offset
+				var vn1 = tri[1] + 1 + normal_offset
+				var vn2 = tri[2] + 1 + normal_offset
+				objcont += str("f ", v0, "//", vn0, " ", v1, "//", vn1, " ", v2, "//", vn2, "\n")
+			else:
+				objcont += str("f ", v0, " ", v1, " ", v2, "\n")
+
+		# Accumulate offsets for next surface
+		vert_offset += verts.size()
+		if UVs != null:
+			uv_offset += UVs.size()
+		if normals != null:
+			normal_offset += normals.size()
+
+	if fdialog:
+		fdialog.popup_centered()
 
 
 func onFileDialogOK(path: String) -> void:
-	var objfile = FileAccess.open(path + "/" + object_name + ".obj", FileAccess.WRITE)
+	var safe_name = _sanitize_name(object_name)
+	if safe_name.is_empty():
+		safe_name = "CSGMesh"
+
+	var obj_path = path.path_join(safe_name + ".obj")
+	var mtl_path = path.path_join(safe_name + ".mtl")
+
+	var objfile = FileAccess.open(obj_path, FileAccess.WRITE)
 	if objfile:
 		objfile.store_string(objcont)
 
-	var mtlfile = FileAccess.open(path + "/" + object_name + ".mtl", FileAccess.WRITE)
+	var mtlfile = FileAccess.open(mtl_path, FileAccess.WRITE)
 	if mtlfile:
 		mtlfile.store_string(matcont)
 
-	print("CSG Mesh Exported: ", path + "/" + object_name + ".obj")
+	print("CSG Mesh Exported successfully to: ", obj_path)
 	get_editor_interface().get_resource_filesystem().scan()
-	if fdialog:
-		fdialog.queue_free()
