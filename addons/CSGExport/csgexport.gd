@@ -8,6 +8,7 @@ var obj: CSGShape3D = null
 var objcont: String = ""
 var matcont: String = ""
 var fdialog: FileDialog = null
+var checkbox_textures: CheckBox = null
 
 
 func _enter_tree() -> void:
@@ -24,7 +25,13 @@ func _enter_tree() -> void:
 	fdialog.access = FileDialog.ACCESS_FILESYSTEM
 	fdialog.show_hidden_files = false
 	fdialog.title = "Export CSGMesh to .OBJ"
-	fdialog.size = Vector2i(700, 450)
+	fdialog.size = Vector2i(700, 480)
+
+	checkbox_textures = CheckBox.new()
+	checkbox_textures.text = "Export Material Textures (.png)"
+	checkbox_textures.button_pressed = true
+	fdialog.get_vbox().add_child(checkbox_textures)
+
 	fdialog.dir_selected.connect(onFileDialogOK)
 	get_editor_interface().get_base_control().add_child(fdialog)
 
@@ -58,7 +65,10 @@ func _handles(object: Object) -> bool:
 
 
 func _on_csg_pressed() -> void:
-	exportcsg()
+	if obj == null:
+		return
+	if fdialog:
+		fdialog.popup_centered()
 
 
 func _sanitize_name(p_name: String) -> String:
@@ -143,7 +153,35 @@ func _find_material_in_csg_tree(node: Node, target_idx: int) -> Material:
 	return null
 
 
-func _build_mtl_entry(mat: Material, mat_name: String) -> String:
+func _export_texture(tex: Texture2D, dest_dir: String, prefix: String) -> String:
+	if tex == null:
+		return ""
+
+	var tex_name = ""
+	if not tex.resource_path.is_empty():
+		tex_name = tex.resource_path.get_file().get_basename()
+	elif not tex.resource_name.is_empty():
+		tex_name = tex.resource_name
+
+	if tex_name.is_empty():
+		tex_name = prefix + "_" + str(tex.get_instance_id())
+
+	tex_name = _sanitize_name(tex_name) + ".png"
+	var dest_file_path = dest_dir.path_join(tex_name)
+
+	var img: Image = tex.get_image()
+	if img != null and not img.is_empty():
+		var export_img = img.duplicate()
+		if export_img.is_compressed():
+			export_img.decompress()
+		var err = export_img.save_png(dest_file_path)
+		if err == OK:
+			return tex_name
+
+	return ""
+
+
+func _build_mtl_entry(mat: Material, mat_name: String, dest_dir: String, p_export_textures: bool) -> String:
 	var entry = "newmtl " + mat_name + "\n"
 	if mat is BaseMaterial3D:
 		var bmat = mat as BaseMaterial3D
@@ -155,8 +193,38 @@ func _build_mtl_entry(mat: Material, mat_name: String) -> String:
 		else:
 			entry += "Ke 0 0 0\n"
 		entry += str("d ", col.a, "\n")
-		if bmat.albedo_texture != null and not bmat.albedo_texture.resource_path.is_empty():
-			entry += str("map_Kd ", bmat.albedo_texture.resource_path.get_file(), "\n")
+
+		if p_export_textures:
+			# Export Albedo Texture
+			if bmat.albedo_texture != null:
+				var map_file = _export_texture(bmat.albedo_texture, dest_dir, mat_name + "_albedo")
+				if not map_file.is_empty():
+					entry += str("map_Kd ", map_file, "\n")
+
+			# Export Emission Texture
+			if bmat.emission_enabled and bmat.emission_texture != null:
+				var map_file = _export_texture(bmat.emission_texture, dest_dir, mat_name + "_emission")
+				if not map_file.is_empty():
+					entry += str("map_Ke ", map_file, "\n")
+
+			# Export Normal Map
+			if bmat.normal_enabled and bmat.normal_texture != null:
+				var map_file = _export_texture(bmat.normal_texture, dest_dir, mat_name + "_normal")
+				if not map_file.is_empty():
+					entry += str("map_Bump ", map_file, "\n")
+
+			# Export Roughness Map
+			if bmat.roughness_texture != null:
+				var map_file = _export_texture(bmat.roughness_texture, dest_dir, mat_name + "_roughness")
+				if not map_file.is_empty():
+					entry += str("map_Pr ", map_file, "\n")
+
+			# Export Metallic Map
+			if bmat.metallic_texture != null:
+				var map_file = _export_texture(bmat.metallic_texture, dest_dir, mat_name + "_metallic")
+				if not map_file.is_empty():
+					entry += str("map_Pm ", map_file, "\n")
+
 	elif mat is ShaderMaterial:
 		var smat = mat as ShaderMaterial
 		var col = Color(0.75, 0.75, 0.75, 1.0)
@@ -168,14 +236,26 @@ func _build_mtl_entry(mat: Material, mat_name: String) -> String:
 		entry += str("Kd ", col.r, " ", col.g, " ", col.b, "\n")
 		entry += "Ke 0 0 0\n"
 		entry += str("d ", col.a, "\n")
+
+		if p_export_textures:
+			for tex_param in ["albedo_texture", "texture_albedo", "main_texture", "tex"]:
+				var tex_param_val = smat.get_shader_parameter(tex_param)
+				if tex_param_val is Texture2D:
+					var map_file = _export_texture(tex_param_val as Texture2D, dest_dir, mat_name + "_albedo")
+					if not map_file.is_empty():
+						entry += str("map_Kd ", map_file, "\n")
+					break
 	else:
 		entry += "Kd 1 1 1\nKe 0 0 0\nd 1\n"
+
 	return entry
 
 
-func exportcsg() -> void:
+func exportcsg(dest_dir: String) -> void:
 	if obj == null:
 		return
+
+	var export_textures: bool = checkbox_textures.button_pressed if checkbox_textures != null else true
 
 	objcont = ""
 	matcont = ""
@@ -258,7 +338,7 @@ func exportcsg() -> void:
 				mat_name = clean + "_" + str(dup_counter)
 			mat_instance_map[instance_id] = mat_name
 			exported_mat_names[mat_name] = true
-			matcont += _build_mtl_entry(mat, mat_name)
+			matcont += _build_mtl_entry(mat, mat_name, dest_dir, export_textures)
 
 		objcont += "usemtl " + mat_name + "\n"
 
@@ -305,17 +385,12 @@ func exportcsg() -> void:
 		if normals != null:
 			normal_offset += normals.size()
 
-	if fdialog:
-		fdialog.popup_centered()
-
-
-func onFileDialogOK(path: String) -> void:
 	var safe_name = _sanitize_name(object_name)
 	if safe_name.is_empty():
 		safe_name = "CSGMesh"
 
-	var obj_path = path.path_join(safe_name + ".obj")
-	var mtl_path = path.path_join(safe_name + ".mtl")
+	var obj_path = dest_dir.path_join(safe_name + ".obj")
+	var mtl_path = dest_dir.path_join(safe_name + ".mtl")
 
 	var objfile = FileAccess.open(obj_path, FileAccess.WRITE)
 	if objfile:
@@ -325,5 +400,9 @@ func onFileDialogOK(path: String) -> void:
 	if mtlfile:
 		mtlfile.store_string(matcont)
 
-	print("CSG Mesh Exported successfully to: ", obj_path)
+	print("CSG Mesh exported successfully to: ", obj_path)
 	get_editor_interface().get_resource_filesystem().scan()
+
+
+func onFileDialogOK(path: String) -> void:
+	exportcsg(path)
